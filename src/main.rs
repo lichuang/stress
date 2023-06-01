@@ -457,18 +457,6 @@ fn main() {
 
     dbg!(args);
 
-    /*
-    let config = sled::Config::new()
-        .cache_capacity(args.cache_mb * 1024 * 1024)
-        .flush_every_ms(if args.flush_every == 0 {
-            None
-        } else {
-            Some(args.flush_every)
-        });
-
-    let tree = Arc::new(config.open().unwrap());
-    tree.set_merge_operator(concatenate_merge);
-    */
     let db = match args.kind {
         0 => Arc::new(SledDb::new("default_sled".to_string(), &args)),
         _ => panic!("error db kind: {}", args.kind),
