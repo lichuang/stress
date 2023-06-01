@@ -78,6 +78,11 @@ mod alloc {
 static ALLOCATOR: DhatAlloc = DhatAlloc;
 
 static TOTAL: AtomicUsize = AtomicUsize::new(0);
+static GET_TOTAL: AtomicUsize = AtomicUsize::new(0);
+static SET_TOTAL: AtomicUsize = AtomicUsize::new(0);
+static DEL_TOTAL: AtomicUsize = AtomicUsize::new(0);
+static CAS_TOTAL: AtomicUsize = AtomicUsize::new(0);
+static MERGE_TOTAL: AtomicUsize = AtomicUsize::new(0);
 
 const USAGE: &str = "
 Usage: stress [--threads=<#>] [--burn-in] [--duration=<s>] \
@@ -300,18 +305,34 @@ impl Db for SledDb {
 }
 
 fn report(shutdown: Arc<AtomicBool>) {
-    let mut last = 0;
+    let mut set_last = 0;
+    let mut get_last = 0;
+    let mut del_last = 0;
+    let mut cas_last = 0;
+    let mut merge_last = 0;
     while !shutdown.load(Ordering::Relaxed) {
         thread::sleep(std::time::Duration::from_secs(1));
-        let total = TOTAL.load(Ordering::Acquire);
+        let set_total = SET_TOTAL.load(Ordering::Acquire);
+        let get_total = GET_TOTAL.load(Ordering::Acquire);
+        let del_total = DEL_TOTAL.load(Ordering::Acquire);
+        let cas_total = CAS_TOTAL.load(Ordering::Acquire);
+        let merge_total = MERGE_TOTAL.load(Ordering::Acquire);
 
         println!(
-            "did {} ops, {}mb RSS",
-            (total - last).to_formatted_string(&Locale::en),
+            "did {} set/{} get/{} del/{} cas/{} merge ops, {}mb RSS",
+            (set_total - set_last).to_formatted_string(&Locale::en),
+            (get_total - get_last).to_formatted_string(&Locale::en),
+            (del_total - del_last).to_formatted_string(&Locale::en),
+            (cas_total - cas_last).to_formatted_string(&Locale::en),
+            (merge_total - merge_last).to_formatted_string(&Locale::en),
             rss() / (1024 * 1024)
         );
 
-        last = total;
+        set_last = set_total;
+        get_last = get_total;
+        del_last = del_total;
+        cas_last = cas_total;
+        merge_last = merge_total;
     }
 }
 
@@ -379,13 +400,16 @@ fn run(args: Args, db: Arc<impl Db>, shutdown: Arc<AtomicBool>) {
         match choice {
             v if v <= get_max => {
                 db.get(&key).unwrap();
+                GET_TOTAL.fetch_add(1, Ordering::Release);
             }
             v if v > get_max && v <= set_max => {
                 let value = valgen(args.val_len);
                 db.insert(&key, value.to_vec()).unwrap();
+                SET_TOTAL.fetch_add(1, Ordering::Release);
             }
             v if v > set_max && v <= del_max => {
                 db.remove(&key).unwrap();
+                DEL_TOTAL.fetch_add(1, Ordering::Release);
             }
             v if v > del_max && v <= cas_max => {
                 let old = if rng.gen::<bool>() {
@@ -405,10 +429,12 @@ fn run(args: Args, db: Arc<impl Db>, shutdown: Arc<AtomicBool>) {
                 if let Err(e) = db.compare_and_swap(&key, old, new) {
                     panic!("operational error: {:?}", e);
                 }
+                CAS_TOTAL.fetch_add(1, Ordering::Release);
             }
             v if v > cas_max && v <= merge_max => {
                 let value = valgen(args.val_len);
                 db.merge(&key, value.to_vec()).unwrap();
+                MERGE_TOTAL.fetch_add(1, Ordering::Release);
             }
             _ => {
                 /*
