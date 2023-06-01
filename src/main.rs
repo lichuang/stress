@@ -407,13 +407,13 @@ fn report(shutdown: Arc<AtomicBool>) {
         let set_total_size = SET_TOTAL_SIZE.load(Ordering::Acquire);
 
         println!(
-            "did {} set/{} get/{} del/{} cas/{} merge ops, set_total_size: {}, {}mb RSS",
+            "did {} set/{} get/{} del/{} cas/{} merge ops, set_total_size: {} MB, {}mb RSS",
             (set_total - set_last).to_formatted_string(&Locale::en),
             (get_total - get_last).to_formatted_string(&Locale::en),
             (del_total - del_last).to_formatted_string(&Locale::en),
             (cas_total - cas_last).to_formatted_string(&Locale::en),
-            set_total_size.to_formatted_string(&Locale::en),
             (merge_total - merge_last).to_formatted_string(&Locale::en),
+            (set_total_size / 1024 / 1024).to_formatted_string(&Locale::en),
             rss() / (1024 * 1024)
         );
 
