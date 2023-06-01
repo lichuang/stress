@@ -527,6 +527,7 @@ dependencies = [
 [[package]]
 name = "sled"
 version = "0.34.6"
+source = "git+https://github.com/datafuse-extras/sled?tag=v0.34.7-datafuse.1#43fa7250d3c6f4964167c9498b622f2923289cf3"
 dependencies = [
  "crc32fast",
  "fs2",
@@ -546,7 +547,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a507befe795404456341dfab10cef66ead4c041f62b8b11bbb92bffe5d0953e0"
 
 [[package]]
-name = "stress2"
+name = "stress"
 version = "0.1.0"
 dependencies = [
  "color-backtrace",

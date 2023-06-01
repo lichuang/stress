@@ -1,4 +1,5 @@
 use std::{
+    fmt, process,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
@@ -93,6 +94,7 @@ Usage: stress [--threads=<#>] [--burn-in] [--duration=<s>] \
     [--flush-every=<ms>]
 
 Options:
+    --kind=<#>         Kind of db, sled:0 [default:0].
     --threads=<#>      Number of threads [default: 4].
     --burn-in          Don't halt until we receive a signal.
     --duration=<s>     Seconds to run for [default: 10].
@@ -112,7 +114,7 @@ Options:
 ";
 
 #[derive(Debug, Clone, Copy)]
-struct Args {
+pub struct Args {
     threads: usize,
     burn_in: bool,
     duration: u64,
@@ -129,6 +131,7 @@ struct Args {
     total_ops: Option<usize>,
     flush_every: u64,
     cache_mb: usize,
+    kind: usize,
 }
 
 impl Default for Args {
@@ -150,6 +153,7 @@ impl Default for Args {
             total_ops: None,
             flush_every: 200,
             cache_mb: 1024,
+            kind: 0,
         }
     }
 }
@@ -185,10 +189,113 @@ impl Args {
                 "total-ops" => args.total_ops = Some(parse(&mut splits)),
                 "flush-every" => args.flush_every = parse(&mut splits),
                 "cache-mb" => args.cache_mb = parse(&mut splits),
+                "kind" => args.kind = parse(&mut splits),
+                "help" => {
+                    println!("USAGE: {}", USAGE);
+                    process::exit(0);
+                }
                 other => panic!("unknown option: {}, {}", other, USAGE),
             }
         }
         args
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Error {
+    message: String,
+}
+
+impl std::error::Error for Error {
+    fn description(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        self.message.fmt(formatter)
+    }
+}
+
+impl From<sled::Error> for Error {
+    fn from(e: sled::Error) -> Error {
+        Self {
+            message: format!("sled error: {}", e.to_string()),
+        }
+    }
+}
+
+impl From<sled::CompareAndSwapError> for Error {
+    fn from(e: sled::CompareAndSwapError) -> Error {
+        Self {
+            message: format!("sled error: {}", e.to_string()),
+        }
+    }
+}
+
+pub trait Db: Send + Sync {
+    fn new(path: String, args: &Args) -> Self;
+    fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Error>;
+    fn insert<K: AsRef<[u8]>>(&self, key: K, value: Vec<u8>) -> Result<(), Error>;
+    fn remove<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Error>;
+    fn compare_and_swap<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        old: Option<Vec<u8>>,
+        new: Option<Vec<u8>>,
+    ) -> Result<(), Error>;
+    fn merge<K: AsRef<[u8]>>(&self, key: K, value: Vec<u8>) -> Result<Option<Vec<u8>>, Error>;
+}
+
+#[derive(Clone)]
+struct SledDb {
+    tree: Arc<sled::Db>,
+}
+
+impl Db for SledDb {
+    fn new(_path: String, args: &Args) -> Self {
+        let config = sled::Config::new()
+            .cache_capacity(args.cache_mb * 1024 * 1024)
+            .flush_every_ms(if args.flush_every == 0 {
+                None
+            } else {
+                Some(args.flush_every)
+            });
+
+        let tree = Arc::new(config.open().unwrap());
+        tree.set_merge_operator(concatenate_merge);
+
+        Self { tree }
+    }
+    fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Error> {
+        let ret = self.tree.get(key)?;
+        Ok(ret.map(|vec| vec.to_vec()))
+    }
+
+    fn insert<K: AsRef<[u8]>>(&self, key: K, value: Vec<u8>) -> Result<(), Error> {
+        self.tree.insert(&key, value)?;
+        Ok(())
+    }
+
+    fn remove<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Error> {
+        self.tree.remove(key)?;
+        Ok(())
+    }
+
+    fn compare_and_swap<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        old: Option<Vec<u8>>,
+        new: Option<Vec<u8>>,
+    ) -> Result<(), Error> {
+        let _ = self.tree.compare_and_swap(&key, old, new)?;
+        Ok(())
+    }
+
+    fn merge<K: AsRef<[u8]>>(&self, key: K, value: Vec<u8>) -> Result<Option<Vec<u8>>, Error> {
+        let ret = self.tree.merge(key, value)?;
+        Ok(ret.map(|vec| vec.to_vec()))
     }
 }
 
@@ -221,7 +328,7 @@ fn concatenate_merge(
     Some(ret)
 }
 
-fn run(args: Args, tree: Arc<sled::Db>, shutdown: Arc<AtomicBool>) {
+fn run(args: Args, db: Arc<impl Db>, shutdown: Arc<AtomicBool>) {
     let get_max = args.get_prop;
     let set_max = get_max + args.set_prop;
     let del_max = set_max + args.del_prop;
@@ -265,55 +372,54 @@ fn run(args: Args, tree: Arc<sled::Db>, shutdown: Arc<AtomicBool>) {
     let mut rng = thread_rng();
 
     while !shutdown.load(Ordering::Relaxed) {
-        let op = TOTAL.fetch_add(1, Ordering::Release);
+        let _op = TOTAL.fetch_add(1, Ordering::Release);
         let key = keygen(args.key_len);
         let choice = rng.gen_range(0, scan_max + 1);
 
         match choice {
             v if v <= get_max => {
-                tree.get_zero_copy(&key, |_| {}).unwrap();
+                db.get(&key).unwrap();
             }
             v if v > get_max && v <= set_max => {
                 let value = valgen(args.val_len);
-                tree.insert(&key, value).unwrap();
+                db.insert(&key, value.to_vec()).unwrap();
             }
             v if v > set_max && v <= del_max => {
-                tree.remove(&key).unwrap();
+                db.remove(&key).unwrap();
             }
             v if v > del_max && v <= cas_max => {
                 let old = if rng.gen::<bool>() {
                     let value = valgen(args.val_len);
-                    Some(value)
+                    Some(value.to_vec())
                 } else {
                     None
                 };
 
                 let new = if rng.gen::<bool>() {
                     let value = valgen(args.val_len);
-                    Some(value)
+                    Some(value.to_vec())
                 } else {
                     None
                 };
 
-                if let Err(e) = tree.compare_and_swap(&key, old, new) {
+                if let Err(e) = db.compare_and_swap(&key, old, new) {
                     panic!("operational error: {:?}", e);
                 }
             }
             v if v > cas_max && v <= merge_max => {
                 let value = valgen(args.val_len);
-                tree.merge(&key, value).unwrap();
+                db.merge(&key, value.to_vec()).unwrap();
             }
             _ => {
+                /*
                 let iter = tree.range(key..).map(|res| res.unwrap());
 
                 if op % 2 == 0 {
                     let _ = iter.take(rng.gen_range(0, 15)).collect::<Vec<_>>();
                 } else {
-                    let _ = iter
-                        .rev()
-                        .take(rng.gen_range(0, 15))
-                        .collect::<Vec<_>>();
+                    let _ = iter.rev().take(rng.gen_range(0, 15)).collect::<Vec<_>>();
                 }
+                */
             }
         }
     }
@@ -326,8 +432,7 @@ fn rss() -> usize {
         use std::io::BufReader;
 
         let mut buf = String::new();
-        let mut f =
-            BufReader::new(std::fs::File::open("/proc/self/statm").unwrap());
+        let mut f = BufReader::new(std::fs::File::open("/proc/self/statm").unwrap());
         f.read_line(&mut buf).unwrap();
         let mut parts = buf.split_whitespace();
         let rss_pages = parts.nth(1).unwrap().parse::<usize>().unwrap();
@@ -352,6 +457,7 @@ fn main() {
 
     dbg!(args);
 
+    /*
     let config = sled::Config::new()
         .cache_capacity(args.cache_mb * 1024 * 1024)
         .flush_every_ms(if args.flush_every == 0 {
@@ -362,7 +468,11 @@ fn main() {
 
     let tree = Arc::new(config.open().unwrap());
     tree.set_merge_operator(concatenate_merge);
-
+    */
+    let db = match args.kind {
+        0 => Arc::new(SledDb::new("default_sled".to_string(), &args)),
+        _ => panic!("error db kind: {}", args.kind),
+    };
     let mut threads = vec![];
 
     let now = std::time::Instant::now();
@@ -370,7 +480,8 @@ fn main() {
     let n_threads = args.threads;
 
     for i in 0..=n_threads {
-        let tree = tree.clone();
+        //let tree = tree.clone();
+        let db = db.clone();
         let shutdown = shutdown.clone();
 
         let t = if i == 0 {
@@ -379,7 +490,7 @@ fn main() {
                 .spawn(move || report(shutdown))
                 .unwrap()
         } else {
-            thread::spawn(move || run(args, tree, shutdown))
+            thread::spawn(move || run(args, db, shutdown))
         };
 
         threads.push(t);
@@ -431,7 +542,10 @@ pub fn setup_logger() {
     color_backtrace::install();
 
     fn tn() -> String {
-        std::thread::current().name().unwrap_or("unknown").to_owned()
+        std::thread::current()
+            .name()
+            .unwrap_or("unknown")
+            .to_owned()
     }
 
     let mut builder = env_logger::Builder::new();

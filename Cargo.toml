@@ -1,5 +1,5 @@
 [package]
-name = "stress2"
+name = "stress"
 version = "0.1.0"
 authors = ["Tyler Neely <t@jujit.su>"]
 publish = false
@@ -27,6 +27,7 @@ memshred = []
 measure_allocs = []
 
 [dependencies]
+sled = { git = "https://github.com/datafuse-extras/sled", tag = "v0.34.7-datafuse.1", default-features = false }
 rand = "0.7.3"
 env_logger = { version = "0.7.1", optional = true }
 log = { version = "0.4.8", optional = true }
@@ -35,5 +36,3 @@ jemallocator = { version = "0.3.2", optional = true }
 num-format = "0.4.0"
 dhat = { version = "0.2.2", optional = true }
 
-[dependencies.sled]
-path = "../.."
