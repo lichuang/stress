@@ -230,7 +230,7 @@ impl fmt::Display for Error {
 impl From<sled::Error> for Error {
     fn from(e: sled::Error) -> Error {
         Self {
-            message: format!("sled error: {}", e.to_string()),
+            message: format!("sled error: {}", e),
         }
     }
 }
@@ -238,7 +238,7 @@ impl From<sled::Error> for Error {
 impl From<sled::CompareAndSwapError> for Error {
     fn from(e: sled::CompareAndSwapError) -> Error {
         Self {
-            message: format!("sled error: {}", e.to_string()),
+            message: format!("sled error: {}", e),
         }
     }
 }
@@ -246,85 +246,103 @@ impl From<sled::CompareAndSwapError> for Error {
 impl From<rocksdb::Error> for Error {
     fn from(e: rocksdb::Error) -> Error {
         Self {
-            message: format!("rocksdb error: {}", e.to_string()),
+            message: format!("rocksdb error: {}", e),
         }
     }
 }
 
-pub trait Db<K: AsRef<[u8]>>: Send + Sync {
-    fn get(&self, key: K) -> Result<Option<Vec<u8>>, Error>
-    where
-        Self: Sized;
-    fn insert(&self, key: K, value: Vec<u8>) -> Result<(), Error>
-    where
-        Self: Sized;
-    fn remove(&self, key: K) -> Result<(), Error>
-    where
-        Self: Sized;
-    fn compare_and_swap(
-        &self,
-        key: K,
-        old: Option<Vec<u8>>,
-        new: Option<Vec<u8>>,
-    ) -> Result<(), Error>
-    where
-        Self: Sized;
-    fn merge(&self, key: K, value: Vec<u8>) -> Result<Option<Vec<u8>>, Error>
-    where
-        Self: Sized;
+enum Db {
+    SledDb(sled::Db),
+    RocksDb(rocksdb::DB),
 }
 
-#[derive(Clone)]
-struct SledDb {
-    tree: Arc<sled::Db>,
+fn new_sled_db(_path: String, args: &Args) -> sled::Db {
+    let config = sled::Config::new()
+        .cache_capacity(args.cache_mb * 1024 * 1024)
+        .flush_every_ms(if args.flush_every == 0 {
+            None
+        } else {
+            Some(args.flush_every)
+        });
+
+    let tree = config.open().unwrap();
+    tree.set_merge_operator(concatenate_merge);
+    tree
 }
 
-impl SledDb {
-    pub fn new(_path: String, args: &Args) -> Self {
-        let config = sled::Config::new()
-            .cache_capacity(args.cache_mb * 1024 * 1024)
-            .flush_every_ms(if args.flush_every == 0 {
-                None
-            } else {
-                Some(args.flush_every)
-            });
-
-        let tree = Arc::new(config.open().unwrap());
-        tree.set_merge_operator(concatenate_merge);
-
-        Self { tree }
-    }
+fn new_rocks_db(path: String, _args: &Args) -> rocksdb::DB {
+    let path = PathBuf::from(path);
+    let db = rocksdb::DB::open_default(path.to_str().unwrap()).unwrap();
+    db
 }
 
-impl<K> Db<K, K: AsRef<[u8]>> for SledDb {
-    fn get(&self, key: K) -> Result<Option<Vec<u8>>, Error> {
-        let ret = self.tree.get(key)?;
-        Ok(ret.map(|vec| vec.to_vec()))
+impl Db {
+    fn get<K: AsRef<[u8]>>(&self, key: K) -> Result<Option<Vec<u8>>, Error> {
+        match self {
+            Db::SledDb(tree) => {
+                let ret = tree.get(key)?;
+                Ok(ret.map(|vec| vec.to_vec()))
+            }
+            Db::RocksDb(db) => {
+                let ret = db.get(key)?;
+                Ok(ret)
+            }
+        }
     }
 
-    fn insert(&self, key: K, value: Vec<u8>) -> Result<(), Error> {
-        self.tree.insert(&key, value)?;
-        Ok(())
+    fn insert<K: AsRef<[u8]>>(&self, key: K, value: Vec<u8>) -> Result<(), Error> {
+        match self {
+            Db::SledDb(tree) => {
+                tree.insert(&key, value)?;
+                Ok(())
+            }
+            Db::RocksDb(db) => {
+                db.put(key, value)?;
+                Ok(())
+            }
+        }
     }
 
-    fn remove(&self, key: K) -> Result<(), Error> {
-        self.tree.remove(key)?;
-        Ok(())
+    fn remove<K: AsRef<[u8]>>(&self, key: K) -> Result<(), Error> {
+        match self {
+            Db::SledDb(tree) => {
+                tree.remove(key)?;
+                Ok(())
+            }
+            Db::RocksDb(db) => {
+                db.delete(key)?;
+                Ok(())
+            }
+        }
     }
 
-    fn compare_and_swap(
+    fn compare_and_swap<K: AsRef<[u8]>>(
         &self,
         key: K,
         old: Option<Vec<u8>>,
         new: Option<Vec<u8>>,
     ) -> Result<(), Error> {
-        let _ = self.tree.compare_and_swap(&key, old, new)?;
-        Ok(())
+        match self {
+            Db::SledDb(tree) => {
+                let _ = tree.compare_and_swap(&key, old, new)?;
+                Ok(())
+            }
+            Db::RocksDb(_db) => {
+                unimplemented!()
+            }
+        }
     }
 
-    fn merge(&self, key: K, value: Vec<u8>) -> Result<Option<Vec<u8>>, Error> {
-        let ret = self.tree.merge(key, value)?;
-        Ok(ret.map(|vec| vec.to_vec()))
+    fn merge<K: AsRef<[u8]>>(&self, key: K, value: Vec<u8>) -> Result<Option<Vec<u8>>, Error> {
+        match self {
+            Db::SledDb(tree) => {
+                let ret = tree.merge(key, value)?;
+                Ok(ret.map(|vec| vec.to_vec()))
+            }
+            Db::RocksDb(_db) => {
+                unimplemented!()
+            }
+        }
     }
 }
 
@@ -419,7 +437,7 @@ fn concatenate_merge(
     Some(ret)
 }
 
-fn run<T: Db<K> + ?Sized, K: AsRef<[u8]>>(args: Args, db: Arc<T>, shutdown: Arc<AtomicBool>) {
+fn run(args: Args, db: Arc<Db>, shutdown: Arc<AtomicBool>) {
     let get_max = args.get_prop;
     let set_max = get_max + args.set_prop;
     let del_max = set_max + args.del_prop;
@@ -553,9 +571,12 @@ fn main() {
 
     dbg!(args);
 
-    let db: Arc<dyn Db> = match args.kind {
-        0 => Arc::new(SledDb::new("default_sled".to_string(), &args)),
-        //1 => Arc::new(RocksDb::new("default_rocksdb".to_string(), &args)),
+    let db = match args.kind {
+        0 => Arc::new(Db::SledDb(new_sled_db("default_sled".to_string(), &args))),
+        1 => Arc::new(Db::RocksDb(new_rocks_db(
+            "default_rocksdb".to_string(),
+            &args,
+        ))),
         _ => panic!("error db kind: {}", args.kind),
     };
     let mut threads = vec![];
