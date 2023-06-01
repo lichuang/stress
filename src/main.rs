@@ -1,5 +1,3 @@
-#![feature(associated_type_bounds)]
-
 use std::{
     fmt,
     path::PathBuf,
@@ -84,6 +82,7 @@ static ALLOCATOR: DhatAlloc = DhatAlloc;
 static TOTAL: AtomicUsize = AtomicUsize::new(0);
 static GET_TOTAL: AtomicUsize = AtomicUsize::new(0);
 static SET_TOTAL: AtomicUsize = AtomicUsize::new(0);
+static SET_TOTAL_SIZE: AtomicUsize = AtomicUsize::new(0);
 static DEL_TOTAL: AtomicUsize = AtomicUsize::new(0);
 static CAS_TOTAL: AtomicUsize = AtomicUsize::new(0);
 static MERGE_TOTAL: AtomicUsize = AtomicUsize::new(0);
@@ -405,13 +404,15 @@ fn report(shutdown: Arc<AtomicBool>) {
         let del_total = DEL_TOTAL.load(Ordering::Acquire);
         let cas_total = CAS_TOTAL.load(Ordering::Acquire);
         let merge_total = MERGE_TOTAL.load(Ordering::Acquire);
+        let set_total_size = SET_TOTAL_SIZE.load(Ordering::Acquire);
 
         println!(
-            "did {} set/{} get/{} del/{} cas/{} merge ops, {}mb RSS",
+            "did {} set/{} get/{} del/{} cas/{} merge ops, set_total_size: {}, {}mb RSS",
             (set_total - set_last).to_formatted_string(&Locale::en),
             (get_total - get_last).to_formatted_string(&Locale::en),
             (del_total - del_last).to_formatted_string(&Locale::en),
             (cas_total - cas_last).to_formatted_string(&Locale::en),
+            set_total_size.to_formatted_string(&Locale::en),
             (merge_total - merge_last).to_formatted_string(&Locale::en),
             rss() / (1024 * 1024)
         );
@@ -492,6 +493,7 @@ fn run(args: Args, db: Arc<Db>, shutdown: Arc<AtomicBool>) {
             }
             v if v > get_max && v <= set_max => {
                 let value = valgen(args.val_len);
+                SET_TOTAL_SIZE.fetch_add(value.len(), Ordering::Release);
                 db.insert(&key, value.to_vec()).unwrap();
                 SET_TOTAL.fetch_add(1, Ordering::Release);
             }
