@@ -255,7 +255,8 @@ enum Db {
     RocksDb(rocksdb::DB),
 }
 
-fn new_sled_db(_path: String, args: &Args) -> sled::Db {
+fn new_sled_db(_path: String, _args: &Args) -> sled::Db {
+    /*
     let config = sled::Config::new()
         .cache_capacity(args.cache_mb * 1024 * 1024)
         .flush_every_ms(if args.flush_every == 0 {
@@ -263,7 +264,8 @@ fn new_sled_db(_path: String, args: &Args) -> sled::Db {
         } else {
             Some(args.flush_every)
         });
-
+    */
+    let config = sled::Config::new();
     let tree = config.open().unwrap();
     tree.set_merge_operator(concatenate_merge);
     tree
@@ -344,52 +346,6 @@ impl Db {
         }
     }
 }
-
-/*
-#[derive(Clone)]
-struct RocksDb {
-    db: Arc<rocksdb::DB>,
-}
-
-impl RocksDb {
-    pub fn new(path: String, _args: &Args) -> Self {
-        let path = PathBuf::from(path);
-        let db = Arc::new(rocksdb::DB::open_default(path.to_str().unwrap()).unwrap());
-
-        Self { db }
-    }
-}
-
-impl<K> Db<K> for RocksDb {
-    fn get(&self, key: K) -> Result<Option<Vec<u8>>, Error> {
-        let ret = self.db.get(key)?;
-        Ok(ret)
-    }
-
-    fn insert(&self, key: K, value: Vec<u8>) -> Result<(), Error> {
-        self.db.put(key, value)?;
-        Ok(())
-    }
-
-    fn remove(&self, key: K) -> Result<(), Error> {
-        self.db.delete(key)?;
-        Ok(())
-    }
-
-    fn compare_and_swap(
-        &self,
-        _key: K,
-        _old: Option<Vec<u8>>,
-        _new: Option<Vec<u8>>,
-    ) -> Result<(), Error> {
-        unimplemented!()
-    }
-
-    fn merge(&self, _key: K, _value: Vec<u8>) -> Result<Option<Vec<u8>>, Error> {
-        unimplemented!()
-    }
-}
-*/
 
 fn report(shutdown: Arc<AtomicBool>) {
     let mut set_last = 0;
