@@ -255,7 +255,7 @@ enum Db {
     RocksDb(rocksdb::DB),
 }
 
-fn new_sled_db(path: String, args: &Args) -> sled::Db {
+fn new_sled_db(path: String, _args: &Args) -> sled::Db {
     /*
     let config = sled::Config::new()
         .cache_capacity(args.cache_mb * 1024 * 1024)
@@ -380,19 +380,6 @@ fn report(shutdown: Arc<AtomicBool>) {
         cas_last = cas_total;
         merge_last = merge_total;
     }
-}
-
-fn concatenate_merge(
-    _key: &[u8],              // the key being merged
-    old_value: Option<&[u8]>, // the previous value, if one existed
-    merged_bytes: &[u8],      // the new bytes being merged in
-) -> Option<Vec<u8>> {
-    // set the new value, return None to delete
-    let mut ret = old_value.map(|ov| ov.to_vec()).unwrap_or_else(Vec::new);
-
-    ret.extend_from_slice(merged_bytes);
-
-    Some(ret)
 }
 
 fn run(args: Args, db: Arc<Db>, shutdown: Arc<AtomicBool>) {
