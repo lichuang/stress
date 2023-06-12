@@ -255,7 +255,7 @@ enum Db {
     RocksDb(rocksdb::DB),
 }
 
-fn new_sled_db(_path: String, _args: &Args) -> sled::Db {
+fn new_sled_db(path: String, args: &Args) -> sled::Db {
     /*
     let config = sled::Config::new()
         .cache_capacity(args.cache_mb * 1024 * 1024)
@@ -264,11 +264,12 @@ fn new_sled_db(_path: String, _args: &Args) -> sled::Db {
         } else {
             Some(args.flush_every)
         });
-    */
-    let config = sled::Config::new();
+
     let tree = config.open().unwrap();
     tree.set_merge_operator(concatenate_merge);
     tree
+    */
+    sled::open(path).unwrap()
 }
 
 fn new_rocks_db(path: String, _args: &Args) -> rocksdb::DB {
